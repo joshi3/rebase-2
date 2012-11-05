@@ -38,6 +38,7 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <linux/pid_namespace.h>
+#include <linux/security.h>
 
 #ifdef CONFIG_ANDROID_BINDER_IPC_32BIT
 #define BINDER_IPC_32BIT 1
@@ -1390,6 +1391,10 @@ static void binder_transaction(struct binder_proc *proc,
 			return_error = BR_DEAD_REPLY;
 			goto err_dead_binder;
 		}
+		if (security_binder_transaction(proc->tsk, target_proc->tsk) < 0) {
+			return_error = BR_FAILED_REPLY;
+			goto err_invalid_target_handle;
+		}
 		if (!(tr->flags & TF_ONE_WAY) && thread->transaction_stack) {
 			struct binder_transaction *tmp;
 			tmp = thread->transaction_stack;
@@ -1544,6 +1549,10 @@ static void binder_transaction(struct binder_proc *proc,
                 return_error = BR_FAILED_REPLY;
 				goto err_binder_get_ref_for_node_failed;
 			}
+			if (security_binder_transfer_binder(proc->tsk, target_proc->tsk)) {
+				return_error = BR_FAILED_REPLY;
+				goto err_binder_get_ref_for_node_failed;
+			}
 			ref = binder_get_ref_for_node(target_proc, node);
 			if (ref == NULL) {
 				return_error = BR_FAILED_REPLY;
@@ -1570,6 +1579,10 @@ static void binder_transaction(struct binder_proc *proc,
 				binder_user_error("%d:%d got transaction with invalid handle, %d\n",
 						proc->pid,
 						thread->pid, fp->handle);
+				return_error = BR_FAILED_REPLY;
+				goto err_binder_get_ref_failed;
+			}
+			if (security_binder_transfer_binder(proc->tsk, target_proc->tsk)) {
 				return_error = BR_FAILED_REPLY;
 				goto err_binder_get_ref_failed;
 			}
@@ -1628,6 +1641,11 @@ static void binder_transaction(struct binder_proc *proc,
 					proc->pid, thread->pid, fp->handle);
 				return_error = BR_FAILED_REPLY;
 				goto err_fget_failed;
+			}
+			if (security_binder_transfer_file(proc->tsk, target_proc->tsk, file) < 0) {
+				fput(file);
+				return_error = BR_FAILED_REPLY;
+				goto err_get_unused_fd_failed;
 			}
 			target_fd = task_get_unused_fd_flags(target_proc, O_CLOEXEC);
 			if (target_fd < 0) {
@@ -2680,42 +2698,44 @@ static int binder_ioctl_write_read(struct file *filp,
         goto out;
     }
 out:
-    return ret;
+	return ret;
 }
 
-static int binder_ioctl_set_ctx_mgr(struct file *filp, struct binder_thread
-*thread)
+static int binder_ioctl_set_ctx_mgr(struct file *filp)
 {
-    int ret = 0;
-    struct binder_proc *proc = filp->private_data;
-    kuid_t curr_euid = current_euid();
+	int ret = 0;
+	struct binder_proc *proc = filp->private_data;
+	kuid_t curr_euid = current_euid();
 
-    if (binder_context_mgr_node != NULL) {
-        pr_err("BINDER_SET_CONTEXT_MGR already set\n");
-        ret = -EBUSY;
-        goto out;
-    }
-    if (uid_valid(binder_context_mgr_uid)) {
-        if (!uid_eq(binder_context_mgr_uid, curr_euid)) {
-            pr_err("BINDER_SET_CONTEXT_MGR bad uid %d != %d\n",
-                    from_kuid(&init_user_ns, curr_euid),
-                    from_kuid(&init_user_ns,
-                    binder_context_mgr_uid));
-            ret = -EPERM;
-            goto out;
-        }
-    } else {
-        binder_context_mgr_uid = curr_euid;
-    }
-    binder_context_mgr_node = binder_new_node(proc, 0, 0);
-    if (binder_context_mgr_node == NULL) {
-        ret = -ENOMEM;
-        goto out;
-    }
-    binder_context_mgr_node->local_weak_refs++;
-    binder_context_mgr_node->local_strong_refs++;
-    binder_context_mgr_node->has_strong_ref = 1;
-    binder_context_mgr_node->has_weak_ref = 1;
+	if (binder_context_mgr_node != NULL) {
+		pr_err("BINDER_SET_CONTEXT_MGR already set\n");
+		ret = -EBUSY;
+		goto out;
+	}
+	ret = security_binder_set_context_mgr(proc->tsk);
+	if (ret < 0)
+		goto out;
+	if (uid_valid(binder_context_mgr_uid)) {
+		if (!uid_eq(binder_context_mgr_uid, curr_euid)) {
+			pr_err("BINDER_SET_CONTEXT_MGR bad uid %d != %d\n",
+			       from_kuid(&init_user_ns, curr_euid),
+			       from_kuid(&init_user_ns,
+					binder_context_mgr_uid));
+			ret = -EPERM;
+			goto out;
+		}
+	} else {
+		binder_context_mgr_uid = curr_euid;
+	}
+	binder_context_mgr_node = binder_new_node(proc, 0, 0);
+	if (binder_context_mgr_node == NULL) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	binder_context_mgr_node->local_weak_refs++;
+	binder_context_mgr_node->local_strong_refs++;
+	binder_context_mgr_node->has_strong_ref = 1;
+	binder_context_mgr_node->has_weak_ref = 1;
 out:
     return ret;
 }
