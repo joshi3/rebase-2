@@ -662,7 +662,7 @@ int sync_fence_wait(struct sync_fence *fence, long timeout)
 
 	if (fence->status == 0) {
 		if (timeout > 0) {
-			pr_info("fence timeout on %s [%p] after %dms\n", fence->name, fence,
+			pr_info("fence timeout on %s [%pK] after %dms\n", fence->name, fence,
 				jiffies_to_msecs(timeout));
 			sync_dump();
 // [MTK] {{{
@@ -975,7 +975,7 @@ static void sync_print_fence(struct seq_file *s, struct sync_fence *fence)
 	struct list_head *pos;
 	unsigned long flags;
 
-	seq_printf(s, "[%p] %s: %s\n", fence, fence->name,
+	seq_printf(s, "[%pK] %s: %s\n", fence, fence->name,
 		   sync_status_str(fence->status));
 
 	list_for_each(pos, &fence->pt_list_head) {
