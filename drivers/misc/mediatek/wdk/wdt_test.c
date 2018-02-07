@@ -1,19 +1,7 @@
-/*
-* Copyright (C) 2016 MediaTek Inc.
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-* See http://www.gnu.org/licenses/gpl-2.0.html for more details.
-*/
-
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/rtpm_prio.h>
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -25,8 +13,11 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/spinlock.h>
+#include <linux/rtpm_prio.h>
 #include <linux/rtc.h>
 #include <linux/cpu.h>
+#include <mach/mt_wdt.h>
+
 /*  */
 
 #include <linux/init.h>		/* For init/exit macros */
@@ -42,11 +33,11 @@
 
 
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <mach/irqs.h>
 #include <mach/mt_reg_base.h>
 #include <mach/mt_typedefs.h>
-#include <mach/mtk_wdt.h>
+#include <mach/mt_wdt.h>
 #include <linux/delay.h>
 
 #include <linux/device.h>
@@ -54,17 +45,39 @@
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <mach/wd_api.h>
-#include <mt-plat/aee.h>
-#include <ext_wd_drv.h>
+#include <linux/aee.h>
+
 
 /* extern int nr_cpu_ids; */
 /* int enable_clock(int id, unsigned char *name); */
 static int test_case;
-module_param(test_case, int, 0664);
+module_param(test_case, int, 00664);
 static DEFINE_SPINLOCK(wdt_test_lock0);
 static DEFINE_SPINLOCK(wdt_test_lock1);
 static struct task_struct *wk_tsk[2];	/* cpu: 2 */
 static int data;
+
+
+
+
+static void wdt_dump_reg(void)
+{
+	pr_alert("****************dump wdt reg start*************\n");
+	pr_alert("MTK_WDT_MODE:0x%x\n", DRV_Reg32(MTK_WDT_MODE));
+	pr_alert("MTK_WDT_LENGTH:0x%x\n", DRV_Reg32(MTK_WDT_LENGTH));
+	pr_alert("MTK_WDT_RESTART:0x%x\n", DRV_Reg32(MTK_WDT_RESTART));
+	pr_alert("MTK_WDT_STATUS:0x%x\n", DRV_Reg32(MTK_WDT_STATUS));
+	pr_alert("MTK_WDT_INTERVAL:0x%x\n", DRV_Reg32(MTK_WDT_INTERVAL));
+	pr_alert("MTK_WDT_SWRST:0x%x\n", DRV_Reg32(MTK_WDT_SWRST));
+	pr_alert("MTK_WDT_NONRST_REG:0x%x\n", DRV_Reg32(MTK_WDT_NONRST_REG));
+	pr_alert("MTK_WDT_NONRST_REG2:0x%x\n", DRV_Reg32(MTK_WDT_NONRST_REG2));
+	pr_alert("MTK_WDT_REQ_MODE:0x%x\n", DRV_Reg32(MTK_WDT_REQ_MODE));
+	pr_alert("MTK_WDT_REQ_IRQ_EN:0x%x\n", DRV_Reg32(MTK_WDT_REQ_IRQ_EN));
+	pr_alert("MTK_WDT_DRAMC_CTL:0x%x\n", DRV_Reg32(MTK_WDT_DRAMC_CTL));
+	pr_alert("****************dump wdt reg end*************\n");
+
+}
+
 
 static int __cpuinit cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
@@ -110,7 +123,7 @@ static struct notifier_block cpu_nfb __cpuinitdata = {
 
 static int kwdt_thread_test(void *arg)
 {
-	struct sched_param param = {.sched_priority = 99 };
+	struct sched_param param = {.sched_priority = RTPM_PRIO_WDT };
 	int cpu;
 	unsigned int flags;
 
@@ -118,22 +131,22 @@ static int kwdt_thread_test(void *arg)
 
 	set_current_state(TASK_INTERRUPTIBLE);
 	for (;;) {
-		pr_debug("wd_test debug start, cpu:%d\n", cpu);
+		pr_alert("wd_test debug start, cpu:%d\n", cpu);
 		spin_lock(&wdt_test_lock0);
 		cpu = smp_processor_id();
 		spin_unlock(&wdt_test_lock0);
 
 		if (test_case == (cpu * 10 + 1)) {	/* cpu0 Preempt disale */
-			pr_debug("CPU:%d, Preempt disable\n", cpu);
+			pr_alert("CPU:%d, Preempt disable\n", cpu);
 			spin_lock(&wdt_test_lock1);
 		}
 		if (test_case == (cpu * 10 + 2)) {	/* cpu0 Preempt&irq disale */
-			pr_debug("CPU:%d, irq & Preempt disable\n", cpu);
+			pr_alert("CPU:%d, irq & Preempt disable\n", cpu);
 			spin_lock_irqsave(&wdt_test_lock1, flags);
 		}
 		msleep(5 * 1000);	/* 5s */
 		wdt_dump_reg();
-		pr_debug("wd_test debug end, cpu:%d\n", cpu);
+		pr_alert("wd_test debug end, cpu:%d\n", cpu);
 	}
 	return 0;
 }
@@ -147,7 +160,7 @@ static int start_kicker(void)
 
 	for (i = 0; i < nr_cpu_ids; i++) {
 		sprintf(name, "wdtk-test-%d", i);
-		pr_debug("[WDK]:thread name: %s\n", name);
+		pr_alert("[WDK]:thread name: %s\n", name);
 		wk_tsk[i] = kthread_create(kwdt_thread_test, &data, name);
 		if (IS_ERR(wk_tsk[i])) {
 			int ret = PTR_ERR(wk_tsk[i]);
